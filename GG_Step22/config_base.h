@@ -53,9 +53,14 @@
 #define RELAY_WATER_HEATER  25
 
 // ─── GPS NEO-6M ──────────────────────────────────────────────────────────────
-#define GPS_RX_PIN    16
-#define GPS_TX_PIN    17
-#define GPS_BAUD      9600
+// Module GNSS multi-constellations (GPS+GLONASS) sur header "GPIO" PH2.0 :
+//   3V3 + GND + GP6 = GPIO 6 directement
+//   Baud par defaut du module : 115200 (et non 9600 comme un NEO-6M classique)
+//   Trames recues : $GNGGA, $GNRMC (preprefixe GN = Generic Navigation, multi-systemes)
+// ⚠️  Conflit avec PIR (qui etait sur GPIO 6) : voir pir_sensor.h (#define ENABLE_PIR 0)
+#define GPS_RX_PIN    6     // <- TX du GPS (jaune), header GPIO PH2.0 broche 3
+#define GPS_TX_PIN    -1    // pas branche (le NEO n'a pas besoin d'etre configure)
+#define GPS_BAUD      115200
 #define GPS_UPDATE_MS 1000
 
 // ─── Periodes de mise a jour ─────────────────────────────────────────────────

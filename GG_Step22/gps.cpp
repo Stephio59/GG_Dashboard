@@ -125,10 +125,47 @@ static void parse_GPGGA(char* line) {
 static void process_nmea(char* line) {
     if (line[0] != '$' || nmea_len < 10) return;
     
+    // === DEBUG : compter les types de trames recues ===
+    static uint32_t cnt_GGA = 0, cnt_RMC = 0, cnt_other = 0;
+    static bool first_GGA_dumped = false;
+    static bool first_RMC_dumped = false;
+    
     if (strncmp(line + 3, "RMC", 3) == 0) {
+        cnt_RMC++;
+        if (!first_RMC_dumped) {
+            Serial0.printf("[GPS-RMC#1] %s\n", line);
+            first_RMC_dumped = true;
+        }
         parse_GPRMC(line);
+        // Dump apres parse pour voir l'effet
+        if (cnt_RMC <= 3) {
+            Serial0.printf("[GPS-RMC#%lu] -> has_fix=%d valid=%d lat=%.5f lon=%.5f\n",
+                (unsigned long)cnt_RMC, gpsData.has_fix, gpsData.valid,
+                gpsData.latitude, gpsData.longitude);
+        }
     } else if (strncmp(line + 3, "GGA", 3) == 0) {
+        cnt_GGA++;
+        if (!first_GGA_dumped) {
+            Serial0.printf("[GPS-GGA#1] %s\n", line);
+            first_GGA_dumped = true;
+        }
         parse_GPGGA(line);
+        if (cnt_GGA <= 3) {
+            Serial0.printf("[GPS-GGA#%lu] -> sat=%d alt=%.1f hdop=%.2f\n",
+                (unsigned long)cnt_GGA, gpsData.satellites, gpsData.altitude_m, gpsData.hdop);
+        }
+    } else {
+        cnt_other++;
+    }
+    
+    // Resume periodique (toutes les 100 trames totales)
+    static uint32_t last_summary = 0;
+    uint32_t total = cnt_GGA + cnt_RMC + cnt_other;
+    if (total - last_summary >= 100) {
+        last_summary = total;
+        Serial0.printf("[GPS-STATS] GGA=%lu RMC=%lu autres=%lu (total=%lu)\n",
+            (unsigned long)cnt_GGA, (unsigned long)cnt_RMC,
+            (unsigned long)cnt_other, (unsigned long)total);
     }
 }
 
@@ -141,6 +178,11 @@ void gps_init() {
     Serial0.printf("[GPS] Init UART1 (RX=GPIO%d TX=GPIO%d @ %d bauds)...\n",
         GPS_RX_PIN, GPS_TX_PIN, GPS_BAUD);
     
+    // ⚠️  CRITIQUE : buffer RX par defaut = 128 octets. A 115200 bauds avec ~600 o/s
+    //     entrants et un loop qui fait aussi BLE+HTTP+ESPNOW, le buffer overflow.
+    //     Resultat : caracteres perdus au milieu de trames -> checksum HS -> fix=0.
+    //     setRxBufferSize() DOIT etre appele AVANT begin(), sinon il est ignore.
+    GpsUart.setRxBufferSize(2048);
     GpsUart.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
     
     // Clear buffer
@@ -150,15 +192,23 @@ void gps_init() {
 }
 
 void gps_update() {
+    static uint32_t bytes_total = 0;
+    static uint32_t lines_total = 0;
+    static uint32_t last_diag_ms = 0;
+    static char     last_byte = 0;
+    
     // Lire tout ce qui est dispo (non-bloquant)
     while (GpsUart.available()) {
         char c = GpsUart.read();
+        bytes_total++;
+        last_byte = c;
         
         // Fin de ligne
         if (c == '\n' || c == '\r') {
             if (nmea_len > 5) {
                 nmea_buf[nmea_len] = 0;
                 process_nmea(nmea_buf);
+                lines_total++;
             }
             nmea_len = 0;
         } else if (nmea_len < NMEA_MAX_LEN - 1) {
@@ -167,6 +217,18 @@ void gps_update() {
             // Overflow : reset
             nmea_len = 0;
         }
+    }
+    
+    // Diagnostic toutes les 5 secondes -> port serie debug (USB-C UART1)
+    if (millis() - last_diag_ms > 5000) {
+        last_diag_ms = millis();
+        Serial0.printf("[GPS-DIAG] octets recus=%lu, lignes NMEA=%lu, dernier byte=0x%02X ('%c'), fix=%d sat=%d\n",
+            (unsigned long)bytes_total,
+            (unsigned long)lines_total,
+            (unsigned char)last_byte,
+            (last_byte >= 32 && last_byte < 127) ? last_byte : '?',
+            gpsData.has_fix ? 1 : 0,
+            gpsData.satellites);
     }
     
     // Timeout : plus de fix si pas de donnees depuis 10s

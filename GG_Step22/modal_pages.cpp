@@ -46,13 +46,23 @@ static void modal_close_cb(lv_event_t* e) {
 
 // ──────────────────────────────────────────────────────
 // Helper : créer une étiquette simple à une position
+//   Retourne nullptr si parent NULL ou OOM (pas de crash)
 // ──────────────────────────────────────────────────────
 static lv_obj_t* make_lbl(lv_obj_t* parent, int x, int y, const char* txt,
                           const lv_font_t* font, lv_color_t color) {
+    if (!parent) {
+        Serial0.println("[make_lbl] parent NULL, skip");
+        return nullptr;
+    }
     lv_obj_t* l = lv_label_create(parent);
-    lv_label_set_text(l, txt);
+    if (!l) {
+        Serial0.printf("[make_lbl] OOM! heap=%u psram=%u\n",
+            (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getFreePsram());
+        return nullptr;
+    }
+    lv_label_set_text(l, txt ? txt : "");
     lv_obj_set_pos(l, x, y);
-    lv_obj_set_style_text_font(l, font, 0);
+    if (font)  lv_obj_set_style_text_font(l, font, 0);
     lv_obj_set_style_text_color(l, color, 0);
     return l;
 }
@@ -210,24 +220,29 @@ void modal_weather_open(int day) {
 // Modal Météo 7 jours (Open-Meteo)
 // ────────────────────────────────────────────────────────
 void modal_weather7_open() {
+    Serial0.println("[T1] modal_weather7_open ENTREE");
     if (current_modal) modal_close_cb(nullptr);
+    Serial0.println("[T2] apres close prev modal");
     
     extern WeatherData weatherData;
     
     // Si on n'a pas encore les donnees 7 jours, on FORCE un chargement maintenant
     // (appel synchrone ~1-3s, mais l'utilisateur prefere ca a une page vide)
     if (!weatherData.valid7days) {
-        Serial0.println("[Modal] Donnees 7j absentes, chargement force...");
+        Serial0.println("[T3] Donnees 7j absentes, chargement force...");
         // Reset le timer interne pour forcer un nouvel appel HTTP
         weather_update_7days();
         // Petit delai pour laisser LVGL respirer si l'appel a pris du temps
         lv_task_handler();
     }
+    Serial0.printf("[T4] valid7days=%d\n", weatherData.valid7days);
     
     current_modal = build_modal_base("Meteo 7 jours");
+    Serial0.printf("[T5] current_modal=%p\n", current_modal);
     current_type = MODAL_WEATHER7;
     
     if (!weatherData.valid7days) {
+        Serial0.println("[T6] branche 'pas de donnees'");
         // Toujours pas de donnees apres tentative -> WiFi probablement HS
         make_lbl(current_modal, 280, 250, "Pas de donnees disponibles", &FONT_28, COLOR_ORANGE);
         make_lbl(current_modal, 280, 310, "Verifie ta connexion WiFi puis", &FONT_22, COLOR_GRAY);
@@ -247,10 +262,9 @@ void modal_weather7_open() {
         Serial0.println("[Modal] Meteo 7j : echec chargement (pas de WiFi ?)");
         return;
     }
+    Serial0.println("[T7] branche 'donnees OK', construction des 7 colonnes");
     
     // Layout : 7 colonnes pour les 7 jours
-    // Largeur ecran 1024, on garde 50px de chaque cote = 924 utiles
-    // 7 colonnes * 130px = 910
     int col_w = 130;
     int x_start = 60;
     int y_top = 130;
@@ -260,50 +274,64 @@ void modal_weather7_open() {
     };
     
     for (int i = 0; i < 7; i++) {
+        Serial0.printf("[T8.%d] iter day=%d, heap=%u psram=%u\n",
+            i, i, (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getFreePsram());
         int x = x_start + i * col_w;
         WeatherDay* d = &weatherData.days7[i];
+        Serial0.printf("[T8.%d.a] d=%p icon='%s' cond='%s' tmax=%.1f\n",
+                       i, d, d->icon, d->condition, d->temp_max);
         
         // Label jour (en haut)
         char lbl[16];
         snprintf(lbl, sizeof(lbl), "%s", DAY_FRENCH[i]);
         make_lbl(current_modal, x, y_top, lbl, &FONT_18, COLOR_GRAY);
+        Serial0.printf("[T8.%d.b] label day OK\n", i);
         
         // Icone meteo (centre)
         lv_obj_t* img = lv_img_create(current_modal);
-        const lv_img_dsc_t* ic = icons_sd_get(owm_to_icon(d->icon));
+        if (!img) {
+            Serial0.printf("[T8.%d.c] img_create OOM, skip jour\n", i);
+            continue;   // saute ce jour, on continue avec les suivants
+        }
+        Serial0.printf("[T8.%d.c] img=%p\n", i, img);
+        const char* icon_name = owm_to_icon(d->icon);
+        Serial0.printf("[T8.%d.d] icon_name='%s'\n", i, icon_name ? icon_name : "(null)");
+        const lv_img_dsc_t* ic = icons_sd_get(icon_name);
+        Serial0.printf("[T8.%d.e] ic=%p\n", i, ic);
         if (ic) lv_img_set_src(img, ic);
-        lv_img_set_zoom(img, 240);  // 64*240/256 = 60px
+        lv_img_set_zoom(img, 240);
         lv_obj_set_pos(img, x, y_top + 30);
         lv_obj_clear_flag(img, LV_OBJ_FLAG_CLICKABLE);
+        Serial0.printf("[T8.%d.f] image OK\n", i);
         
-        // Temperatures min/max (en dessous icone)
-        char tmax[16], tmin[16];
-        snprintf(tmax, sizeof(tmax), "%.0f°", d->temp_max);
-        snprintf(tmin, sizeof(tmin), "%.0f°", d->temp_min);
-        
-        make_lbl(current_modal, x, y_top + 110, tmax, &FONT_28, COLOR_ORANGE);
-        make_lbl(current_modal, x + 50, y_top + 120, tmin, &FONT_22, lv_color_hex(0x88AAFF));
+        // Temperatures min/max COMBINEES dans un seul label (au lieu de 2)
+        // -> divise par 2 le nb de widgets LVGL pour les temps
+        char tlbl[24];
+        snprintf(tlbl, sizeof(tlbl), "%.0f° / %.0f°", d->temp_max, d->temp_min);
+        make_lbl(current_modal, x, y_top + 110, tlbl, &FONT_22, COLOR_ORANGE);
+        Serial0.printf("[T8.%d.g] temps OK\n", i);
         
         // Condition (texte court)
         make_lbl(current_modal, x, y_top + 160, d->condition, &FONT_14, COLOR_WHITE);
+        Serial0.printf("[T8.%d.h] condition OK\n", i);
         
-        // Pluie (mm) si > 0
+        // Pluie + Vent COMBINES (au lieu de 2 labels)
+        char wr[24];
         if (d->rain_mm > 0.1f) {
-            char rain[16];
-            snprintf(rain, sizeof(rain), "%.1f mm", d->rain_mm);
-            make_lbl(current_modal, x, y_top + 190, rain, &FONT_14, lv_color_hex(0x55AAFF));
+            snprintf(wr, sizeof(wr), "%.0fkm/h %.1fmm", d->wind_kmh, d->rain_mm);
+        } else {
+            snprintf(wr, sizeof(wr), "%.0f km/h", d->wind_kmh);
         }
-        
-        // Vent (km/h)
-        char wind[20];
-        snprintf(wind, sizeof(wind), "%.0f km/h", d->wind_kmh);
-        make_lbl(current_modal, x, y_top + 220, wind, &FONT_14, COLOR_GRAY);
+        make_lbl(current_modal, x, y_top + 210, wr, &FONT_14, COLOR_GRAY);
+        Serial0.printf("[T8.%d.i] day complete\n", i);
     }
+    Serial0.printf("[T9] toutes les colonnes faites, heap final=%u\n",
+        (unsigned)ESP.getFreeHeap());
     
     // Source en bas
     make_lbl(current_modal, 380, 510, "Source: Open-Meteo.com (gratuit)", &FONT_14, COLOR_GRAY);
     
-    Serial0.println("[Modal] Meteo 7j ouvert");
+    Serial0.println("[T10] Meteo 7j ouvert SUCCES");
 }
 
 // ──────────────────────────────────────────────────────

@@ -42,8 +42,20 @@ void weather_update() {
         userConfig.owm_city, userConfig.owm_api_key, OWM_UNITS, OWM_LANG);
     
     HTTPClient http;
+    
+    // === DEBUG : verifier l'etat avant la requete ===
+    Serial0.printf("[Weather] Pre-GET: WiFi=%d heap=%u psram=%u\n",
+        WiFi.status(), (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getFreePsram());
+    
+    // Test DNS explicite (si echec, c'est un probleme de resolution de nom)
+    IPAddress resolved;
+    bool dns_ok = WiFi.hostByName("api.openweathermap.org", resolved);
+    Serial0.printf("[Weather] DNS api.openweathermap.org = %s (ok=%d)\n",
+        resolved.toString().c_str(), dns_ok);
+    
     http.begin(url);
-    http.setTimeout(5000);
+    http.setTimeout(8000);
+    http.useHTTP10(true);  // au cas ou le serveur enverrait du chunked
     
     int code = http.GET();
     if (code != 200) {
@@ -56,12 +68,17 @@ void weather_update() {
     WiFiClient* stream = http.getStreamPtr();
     DynamicJsonDocument doc(8192);
 
-    StaticJsonDocument<256> filter;
-    filter["daily"]["weather_code"] = true;
-    filter["daily"]["temperature_2m_max"] = true;
-    filter["daily"]["temperature_2m_min"] = true;
-    filter["daily"]["precipitation_sum"] = true;
-    filter["daily"]["wind_speed_10m_max"] = true;
+    // ⚠️  Filtre adapte a OpenWeatherMap (et NON Open-Meteo : les cles different)
+    // OWM /forecast renvoie : { "list": [ { "dt", "main":{temp,humidity}, "weather":[{main,description,icon}], "wind":{speed}, "rain":{3h} } ] }
+    StaticJsonDocument<384> filter;
+    filter["list"][0]["dt"] = true;
+    filter["list"][0]["main"]["temp"] = true;
+    filter["list"][0]["main"]["humidity"] = true;
+    filter["list"][0]["weather"][0]["main"] = true;
+    filter["list"][0]["weather"][0]["description"] = true;
+    filter["list"][0]["weather"][0]["icon"] = true;
+    filter["list"][0]["wind"]["speed"] = true;
+    filter["list"][0]["rain"]["3h"] = true;
 
     DeserializationError err = deserializeJson(doc, *stream, DeserializationOption::Filter(filter));
     http.end();
@@ -184,8 +201,21 @@ void weather_update_7days() {
                    lat, lon, from_gps ? "GPS" : "Dijon defaut", url);
     
     HTTPClient http;
+
+    // === DEBUG : verifier l'etat avant la requete ===
+    Serial0.printf("[Weather7] Pre-GET: WiFi=%d heap=%u psram=%u\n",
+        WiFi.status(), (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getFreePsram());
+    IPAddress resolved;
+    bool dns_ok = WiFi.hostByName("api.open-meteo.com", resolved);
+    Serial0.printf("[Weather7] DNS api.open-meteo.com = %s (ok=%d)\n",
+        resolved.toString().c_str(), dns_ok);
+
     http.begin(url);
     http.setTimeout(8000);
+    // ⚠️  CRITIQUE : forcer HTTP/1.0 pour eviter le chunked transfer encoding
+    // Sinon getStream() passe les en-tetes de chunks (ex "1f4\r\n") a ArduinoJson
+    // qui leve "InvalidInput". Voir https://arduinojson.org/v6/how-to/use-arduinojson-with-httpclient/
+    http.useHTTP10(true);
     // Suivre les redirections HTTPS automatiquement
     http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
     int code = http.GET();
@@ -200,28 +230,16 @@ void weather_update_7days() {
     Serial0.printf("[Weather7] HTTP 200, taille = %d octets\n", content_len);
     
     // Allouer doc plus grand SANS filter, pour voir ce qu'on recoit vraiment
-    String payload = http.getString();
+    DynamicJsonDocument doc(8192);
+    DeserializationError err = deserializeJson(doc, http.getStream());
     http.end();
-
-    if (payload.isEmpty()) {
-        Serial0.println("[Weather7] payload vide");
-        return;
-    }
-    Serial0.printf("[Weather7] payload debut: %.200s\n", payload.c_str());
-
-    StaticJsonDocument<256> filter;
-    filter["daily"]["weather_code"] = true;
-    filter["daily"]["temperature_2m_max"] = true;
-    filter["daily"]["temperature_2m_min"] = true;
-    filter["daily"]["precipitation_sum"] = true;
-    filter["daily"]["wind_speed_10m_max"] = true;
-
-    DynamicJsonDocument doc(4096);
-    DeserializationError err = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
     if (err) {
         Serial0.printf("[Weather7] JSON err: %s\n", err.c_str());
         return;
     }
+    
+    Serial0.printf("[Weather7] JSON OK, doc.memoryUsage()=%u\n", (unsigned)doc.memoryUsage());
+    Serial0.printf("[Weather7] doc[\"daily\"] est objet ? %d\n", doc["daily"].is<JsonObject>());
     
     JsonArray codes = doc["daily"]["weather_code"].as<JsonArray>();
     JsonArray tmax = doc["daily"]["temperature_2m_max"].as<JsonArray>();
