@@ -99,7 +99,7 @@ static lv_obj_t* build_modal_base(const char* titre) {
     lv_obj_set_style_text_font(title_lbl, &FONT_36, 0);
     lv_obj_set_style_text_color(title_lbl, COLOR_BLUE, 0);
     lv_obj_align(title_lbl, LV_ALIGN_TOP_MID, 0, 14);
-    
+    lv_obj_move_foreground(modal);  // ← AJOUTER CETTE LIGNE
     return modal;
 }
 
@@ -224,17 +224,18 @@ void modal_weather7_open() {
     if (current_modal) modal_close_cb(nullptr);
     Serial0.println("[T2] apres close prev modal");
     
-    extern WeatherData weatherData;
+  //  extern WeatherData weatherData;    -> NE JAMAIS appeler weather_update_7days() ici !
+  // C'est appelé dans le loop() sur le stack principal - pas depuis LVGL UI
     
     // Si on n'a pas encore les donnees 7 jours, on FORCE un chargement maintenant
     // (appel synchrone ~1-3s, mais l'utilisateur prefere ca a une page vide)
-    if (!weatherData.valid7days) {
+ /*    if (!weatherData.valid7days) {
         Serial0.println("[T3] Donnees 7j absentes, chargement force...");
         // Reset le timer interne pour forcer un nouvel appel HTTP
         weather_update_7days();
         // Petit delai pour laisser LVGL respirer si l'appel a pris du temps
         lv_task_handler();
-    }
+     }*/
     Serial0.printf("[T4] valid7days=%d\n", weatherData.valid7days);
     
     current_modal = build_modal_base("Meteo 7 jours");

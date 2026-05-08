@@ -121,6 +121,14 @@ void UiManager::update() {
         default: break;
     }
     
+    // Pages : seulement si pas de modal
+    if (!modal_is_open()) {
+        switch (_currentPage) {
+            case PAGE_HOME:    page_home_update();    break;
+            // ...
+        }
+    }
+    
     // Update modal si ouverte
     modal_update();
 }
@@ -129,10 +137,10 @@ void UiManager::update() {
 //  showPage()
 // ============================================================
 void UiManager::showPage(DashPage page) {
-    for (int i = 0; i < PAGE_COUNT; i++) {
-        if (_pages[i]) lv_obj_add_flag(_pages[i], LV_OBJ_FLAG_HIDDEN);
-        if (_nav_btns[i]) lv_obj_remove_style(_nav_btns[i], &style_nav_btn_active, 0);
-    }
+    // for (int i = 0; i < PAGE_COUNT; i++) {
+        // if (_pages[i]) lv_obj_add_flag(_pages[i], LV_OBJ_FLAG_HIDDEN);
+        // if (_nav_btns[i]) lv_obj_remove_style(_nav_btns[i], &style_nav_btn_active, 0);
+    // }
     if (_pages[page]) lv_obj_clear_flag(_pages[page], LV_OBJ_FLAG_HIDDEN);
     if (_nav_btns[page]) lv_obj_add_style(_nav_btns[page], &style_nav_btn_active, 0);
     _currentPage = page;
@@ -150,6 +158,14 @@ void UiManager::showPage(DashPage page) {
     } else {
         heating_request_deactivate();
     }
+}
+
+// ============================================================
+//  refreshPage()
+// ============================================================
+void UiManager::refreshCurrentPage() {
+    if (_pages[_currentPage]) 
+        lv_obj_clear_flag(_pages[_currentPage], LV_OBJ_FLAG_HIDDEN);
 }
 
 // ============================================================

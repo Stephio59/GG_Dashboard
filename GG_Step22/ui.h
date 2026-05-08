@@ -39,7 +39,9 @@ public:
     void showPage(DashPage page);
     DashPage currentPage() const { return _currentPage; }
 
-    lv_style_t style_card;
+	void refreshCurrentPage();
+    
+	lv_style_t style_card;
     lv_style_t style_nav_btn;
     lv_style_t style_nav_btn_active;
 
