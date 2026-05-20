@@ -329,6 +329,10 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <ESPmDNS.h>
+#include "GpioPinConfig.h"
+#include "TemperatureSensors.h"
+#include "FanControl.h"
+#include "EthernetW5500.h"
 #include <WebServer.h>
 #include <ArduinoOTA.h>    //Modification On The Air
 #include <PubSubClient.h>  //Librairie pour la gestion Mqtt
@@ -418,6 +422,7 @@ byte ESP32_Type = 0;                                                    //0=Inco
                                                                         //8 = Ecran 320*240 ST7789/BL27  2.4pouces capacitif
                                                                         //9 = Ecran 320*240 ST7789/BL27  2.8pouces capacitif
                                                                         //10 = ESP32-ETH01
+																		//11 = W5500 SPI (CS=5, MOSI=13, MISO=15, CLK=14)
 byte LEDgroupe = 0;                                                     //0:pas de LED,1à9 pour les LED. 10 et 11 pour les écrans  OLED
 byte LEDyellow[] = { 0, 18, 4, 2, 4, 0, 0, 0, 0, 0, 18, 4, 18, 4 };     //Ou SDA pour OLED
 byte LEDgreen[] = { 0, 19, 16, 4, 17, 0, 0, 0, 0, 0, 19, 32, 19, 32 };  //ou SCL pour OLED
@@ -996,7 +1001,18 @@ void setup() {
     Serial.println("Système fichiers LittleFS monté");
   }
   delay(1000);
+   
+Serial.println("\n\n========================================");
+    Serial.println("F1ATB Maison - Démarrage Module");
+    Serial.println("========================================\n");
 
+    // Initialisation des modules
+    initEthernet();
+    initTemperatureSensors();
+    initFan();
+
+    Serial.println("\n✓ Module prêt !\n");
+	
   //Hostname par defaut
   hostname = String(HOSTNAME);
   uint32_t chipId = 0;
@@ -1123,7 +1139,9 @@ void setup() {
         delay(1);
       }
     }
-
+ } else if (ESP32_Type == 11) {   // ← bloc séparé, au même niveau
+     PrintScroll("Lancement liaison Ethernet W5500");
+	 Init_W5500();
   } else {  //ESP32 en WIFI
     TelnetPrintln("Lancement du Wifi");
     delay(500);
@@ -1446,6 +1464,20 @@ void Task_LectureRMS(void *pvParameters) {
    **********************
 */
 void loop() {
+    // Traitement Ethernet (interruption W5500)
+    handleEthernet();
+
+    // Lecture des capteurs de température
+    if (readTemperatures()) {
+        Serial.println("[SECURITE] Température de sécurité atteinte !");
+        // À adapter : action d'urgence (coupure Triac, etc.)
+    }
+
+    // Mise à jour vitesse ventilateur en fonction de tempChauffEau
+    updateFanSpeed(tempChauffEau);
+
+    // Pause pour laisser respirer
+    delay(100);
 
   //Estimation charge coeur
   unsigned long tps = millis();
@@ -1851,7 +1883,7 @@ void InitGPIOs() {
   //Triac init
   if (pTriac > 0) {
     if (ESP32_Type == 2 || ESP32_Type == 3) pTriac = 1;  //Obligatoire carte avec relais)
-    if (ESP32_Type == 10) pTriac = 4;                    //Obligatoire carte ETH01)
+    if (ESP32_Type == 10 || ESP32_Type == 11) pTriac = 4;                   //Obligatoire carte ETH01)
     pulseTriac = PulseT[pTriac];
     zeroCross = ZeroT[pTriac];
     pinMode(zeroCross, INPUT_PULLUP);
